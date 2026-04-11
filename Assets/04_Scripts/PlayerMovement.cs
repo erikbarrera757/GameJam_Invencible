@@ -1,8 +1,6 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
 
-[RequireComponent(typeof(CharacterController))]
-[RequireComponent(typeof(Animator))]
 public class PlayerMovement : MonoBehaviour
 {
     private CharacterController controller;
@@ -10,104 +8,128 @@ public class PlayerMovement : MonoBehaviour
     private Vector2 moveInput;
     private Vector3 velocity;
 
-    [Header("Ajustes de Movimiento")]
+    [Header("Ajustes")]
     public float speed = 5f;
+    public float gravity = -25f;
+    public float jumpHeight = 2f;
     public float rotationSpeed = 10f;
 
-    [Header("Ajustes de Salto y Gravedad")]
-    public float jumpHeight = 2f;
-    public float gravity = -25f; // Recomendado -20 a -30 para que no sea lento
+    [Header("Sistema de Armas")]
+    public GameObject axeInHand;
+    public GameObject axePrefab;
+
+    private GameObject hachaCercana; // Se llenará cuando entres en la "burbuja"
 
     void Start()
     {
         controller = GetComponent<CharacterController>();
         anim = GetComponent<Animator>();
-
-        // Bloqueo del cursor para que no estorbe al jugar
         Cursor.lockState = CursorLockMode.Locked;
-    }
-
-    // Se activa automáticamente con el componente Player Input (Acción "Move")
-    public void OnMove(InputValue value)
-    {
-        moveInput = value.Get<Vector2>();
-    }
-
-    // Se activa automáticamente con el componente Player Input (Acción "Jump")
-    public void OnJump(InputValue value)
-    {
-        // Solo saltamos si estamos tocando el suelo
-        if (controller.isGrounded)
-        {
-            // Fórmula física: v = sqrt(h * -2 * g)
-            velocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
-
-            if (anim != null)
-            {
-                anim.SetTrigger("Jump");
-            }
-        }
+        if (axeInHand != null) axeInHand.SetActive(false);
     }
 
     void Update()
     {
-        // 1. Resetear velocidad vertical al estar en el suelo
-        if (controller.isGrounded && velocity.y < 0)
+        ManejarMovimiento();
+
+        // Ahora solo checamos si hachaCercana no es nula al presionar G
+        if (Keyboard.current != null && Keyboard.current.gKey.wasPressedThisFrame)
         {
-            velocity.y = -2f; // Pequeña fuerza hacia abajo para mantener el contacto
-        }
-
-        // 2. Calcular Dirección de Movimiento (Relativa a la Cámara)
-        // Obtenemos las direcciones de la cámara y anulamos el eje Y
-        Vector3 forward = Camera.main.transform.forward;
-        Vector3 right = Camera.main.transform.right;
-        forward.y = 0;
-        right.y = 0;
-        forward.Normalize();
-        right.Normalize();
-
-        // Esta es la dirección en la que el JUGADOR desea moverse (basado en el teclado)
-        Vector3 desiredMoveDirection = (forward * moveInput.y + right * moveInput.x).normalized;
-
-        // --- SOLUCIÓN PARA SALTO EN EL SITIO ---
-        // Variable para el movimiento final de este frame
-        Vector3 finalHorizontalMovement = desiredMoveDirection;
-
-        // Si NO estamos en el suelo (estamos saltando), anulamos el control horizontal
-        if (!controller.isGrounded)
-        {
-            // Al hacer esto Vector3.zero, el personaje no avanza, retrocede ni va a los lados.
-            // Solo se moverá en el eje Y (vertical) debido a la gravedad.
-            finalHorizontalMovement = Vector3.zero;
-        }
-        // --- FIN DE LA SOLUCIÓN ---
-
-        // 3. Aplicar Movimiento Horizontal
-        Vector3 currentMovement = finalHorizontalMovement * speed;
-
-        // 4. Aplicar Gravedad
-        velocity.y += gravity * Time.deltaTime;
-        currentMovement.y = velocity.y;
-
-        // Mover el controlador (una sola llamada con movimiento combinado)
-        controller.Move(currentMovement * Time.deltaTime);
-
-        // 5. Animación de Carrera (basada en el input real, no el final horizontal)
-        if (anim != null)
-        {
-            anim.SetFloat("Speed", moveInput.magnitude);
-        }
-
-        // 6. Rotación del personaje hacia donde se mueve
-        // Usamos desiredMoveDirection para que rote aunque esté en el aire y no avance
-        if (desiredMoveDirection.sqrMagnitude > 0.1f)
-        {
-            Quaternion targetRotation = Quaternion.LookRotation(desiredMoveDirection);
-            transform.rotation = Quaternion.RotateTowards(
-                transform.rotation,
-                targetRotation,
-                rotationSpeed * 50f * Time.deltaTime
-            );
+            if (anim != null && anim.GetBool("hasWeapon"))
+            {
+                SoltarHacha();
+            }
+            else if (hachaCercana != null)
+            {
+                RecogerHacha();
+            }
         }
     }
+
+    // --- LÓGICA DE DETECCIÓN (EL TRIGGER) ---
+    private void OnTriggerEnter(Collider other)
+    {
+        // Detectamos el hacha tanto si chocamos con su Box como con su Sphere
+        if (other.CompareTag("WeaponItem"))
+        {
+            hachaCercana = other.gameObject;
+            Debug.Log("Hacha detectada. Presiona G");
+        }
+    }
+
+    private void OnTriggerExit(Collider other)
+    {
+        if (other.CompareTag("WeaponItem"))
+        {
+            // Solo limpiamos si el objeto que sale es el mismo que teníamos guardado
+            if (hachaCercana == other.gameObject)
+            {
+                hachaCercana = null;
+                Debug.Log("Te alejaste del hacha");
+            }
+        }
+    }
+    void SoltarHacha()
+    {
+        axeInHand.SetActive(false);
+        anim.SetBool("hasWeapon", false);
+
+        // Spawneamos el hacha un poco más adelante del pecho
+        Vector3 spawnPos = transform.position + transform.forward * 1.2f + Vector3.up * 1.2f;
+        GameObject hachaSoltada = Instantiate(axePrefab, spawnPos, transform.rotation);
+
+        Rigidbody rb = hachaSoltada.GetComponent<Rigidbody>();
+        if (rb != null)
+        {
+            rb.isKinematic = false;
+            rb.collisionDetectionMode = CollisionDetectionMode.Continuous;
+
+            // Impulso hacia adelante y un poquito hacia arriba para que "vuele" un poco
+            Vector3 fuerzaLanzamiento = (transform.forward + Vector3.up * 0.5f) * 3f;
+            rb.AddForce(fuerzaLanzamiento, ForceMode.Impulse);
+        }
+
+        // Limpiamos la referencia para que no intente recoger el hacha que acaba de soltar
+        hachaCercana = null;
+    }
+
+    void RecogerHacha()
+    {
+        axeInHand.SetActive(true);
+        anim.SetBool("hasWeapon", true);
+
+        // Ajustamos la posición exacta en la mano (usando tus valores de dc2ec5.jpg)
+        axeInHand.transform.localPosition = new Vector3(-0.001f, 0.231f, 0.067f);
+        axeInHand.transform.localEulerAngles = Vector3.zero;
+
+        Destroy(hachaCercana);
+        hachaCercana = null;
+        Debug.Log("Hacha recogida.");
+    }
+
+    // (El resto de métodos ManejarMovimiento, OnMove, etc. se mantienen igual)
+    void ManejarMovimiento()
+    {
+        bool grounded = controller.isGrounded;
+        if (grounded && velocity.y < 0) velocity.y = -2f;
+        if (anim != null) anim.SetBool("isGrounded", grounded);
+        Vector3 forward = Camera.main.transform.forward;
+        Vector3 right = Camera.main.transform.right;
+        forward.y = 0; right.y = 0;
+        forward.Normalize(); right.Normalize();
+        Vector3 moveDirection = (forward * moveInput.y + right * moveInput.x).normalized;
+        Vector3 currentMovement = moveDirection * speed;
+        velocity.y += gravity * Time.deltaTime;
+        currentMovement.y = velocity.y;
+        controller.Move(currentMovement * Time.deltaTime);
+        if (anim != null) anim.SetFloat("Speed", moveInput.magnitude);
+        if (moveDirection.sqrMagnitude > 0.1f)
+        {
+            Quaternion targetRot = Quaternion.LookRotation(moveDirection);
+            transform.rotation = Quaternion.RotateTowards(transform.rotation, targetRot, rotationSpeed * 50f * Time.deltaTime);
+        }
+    }
+    public void OnMove(InputValue value) { moveInput = value.Get<Vector2>(); }
+    public void OnAttack(InputValue value) { if (controller.isGrounded && anim != null) anim.SetTrigger("Attack"); }
+    public void OnJump(InputValue value) { if (controller.isGrounded) { velocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity); if (anim != null) anim.SetTrigger("Jump"); } }
 }
